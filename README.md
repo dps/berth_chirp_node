@@ -33,8 +33,38 @@ To make the whole site members-only instead:
 `berth access chirp allow you@gmail.com @family`.
 
 Until Postgres is linked, chirps are kept in memory (and lost on each
-deploy); the page says so. Once `DATABASE_URL` is set, the table is created
-on startup.
+deploy); the page says so.
+
+## Migrations
+
+The schema lives in `migrations/*.sql`, applied in name order by
+`migrate.js` (about 50 lines, no dependencies beyond `pg`). Each runs once,
+in a transaction, and is recorded in `schema_migrations`. The `Procfile`
+tells Berth to run it before every release:
+
+```
+release: node migrate.js
+```
+
+Berth runs it in a one-off container from the new image, with the new
+release's config, before the new code takes traffic. If it fails, the deploy
+stops and the running version keeps serving. On production Berth backs up
+the database first, so `berth rollback chirp --with-data` can put code and
+data back together. The server itself never changes the schema; it refuses
+to start against a database `migrate.js` hasn't set up.
+
+To change the schema, add the next file (`004_something.sql`) and try it on
+the dev version first, against a copy of production's data:
+
+```bash
+berth dev:db:copy chirp     # production's data into chirp-dev's database
+berth dev:push              # builds your working tree, runs migrate.js, starts it
+```
+
+`dev:push` exits 3 if the migration fails, with the error in its output.
+The old code keeps running while the new release starts, so make changes
+it can live with: add a column before the code that uses it, and drop one
+only in a release after the code stops using it.
 
 | Path | What |
 | --- | --- |
@@ -46,6 +76,6 @@ on startup.
 | `DELETE /api/chirps/:id` | delete your own chirp |
 | `/healthz` | health check: `berth config:set chirp BERTH_HEALTHCHECK=/healthz` |
 
-Local development: `npm install`, then `CHIRP_DEV_USER=you@example.com npm
-start` in one terminal (a pretend signed-in user, since there's no Berth in
+Local development: `npm install`, then (with a `DATABASE_URL`) `node
+migrate.js`, then `CHIRP_DEV_USER=you@example.com npm start` in one terminal (a pretend signed-in user, since there's no Berth in
 front) and `npm run dev` in another.

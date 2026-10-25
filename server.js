@@ -92,23 +92,12 @@ function postgresStore(url) {
   return {
     kind: "postgres",
     async init() {
-      await pool.query(`CREATE TABLE IF NOT EXISTS chirps (
-        id         serial PRIMARY KEY,
-        handle     text NOT NULL,
-        body       text NOT NULL,
-        likes      integer NOT NULL DEFAULT 0,
-        created_at timestamptz NOT NULL DEFAULT now()
-      )`);
-      // Columns added when Chirp moved to Berth sign-in.
-      await pool.query(`ALTER TABLE chirps
-        ADD COLUMN IF NOT EXISTS author_id text,
-        ADD COLUMN IF NOT EXISTS name text,
-        ADD COLUMN IF NOT EXISTS picture text`);
-      await pool.query(`CREATE TABLE IF NOT EXISTS likes (
-        chirp_id integer NOT NULL REFERENCES chirps ON DELETE CASCADE,
-        user_id  text NOT NULL,
-        PRIMARY KEY (chirp_id, user_id)
-      )`);
+      // The schema is migrate.js's job (Berth runs it before each release).
+      try {
+        await pool.query("SELECT 1 FROM schema_migrations LIMIT 1");
+      } catch {
+        throw new Error("the database has no schema yet: run `node migrate.js` (Berth runs it via the Procfile)");
+      }
     },
     async list(userId) {
       const { rows } = await pool.query(`${select} ORDER BY c.id DESC LIMIT 100`, [userId || ""]);
