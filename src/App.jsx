@@ -10,11 +10,59 @@ function timeAgo(iso) {
   return new Date(iso).toLocaleDateString();
 }
 
-function Composer({ handle, setHandle, onPosted }) {
+// Berth's sign-in endpoints live on every app with an access policy.
+const loginURL = () => "/_berth/login?return=" + encodeURIComponent(location.pathname + location.search);
+
+function Avatar({ picture, name, size = 40 }) {
+  const [broken, setBroken] = useState(false);
+  if (picture && !broken) {
+    return (
+      <img className="avatar" src={picture} alt="" width={size} height={size} referrerPolicy="no-referrer" onError={() => setBroken(true)} />
+    );
+  }
+  return (
+    <div className="avatar" style={{ width: size, height: size }} aria-hidden>
+      {(name || "?")[0].toUpperCase()}
+    </div>
+  );
+}
+
+function Account({ me }) {
+  if (!me) return null;
+  if (!me.signed_in) {
+    return (
+      <a className="signin" href={loginURL()}>
+        Sign in with Google
+      </a>
+    );
+  }
+  return (
+    <div className="account">
+      <Avatar picture={me.picture} name={me.name} size={28} />
+      <span className="account-name">{me.name}</span>
+      <form method="post" action="/_berth/logout">
+        <button className="link">Sign out</button>
+      </form>
+    </div>
+  );
+}
+
+function Composer({ me, onPosted }) {
   const [body, setBody] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const left = MAX - body.length;
+
+  if (!me?.signed_in) {
+    return (
+      <div className="composer prompt">
+        <p>Join the conversation.</p>
+        <a className="signin" href={loginURL()}>
+          Sign in to chirp
+        </a>
+      </div>
+    );
+  }
 
   async function submit(e) {
     e.preventDefault();
@@ -24,7 +72,7 @@ function Composer({ handle, setHandle, onPosted }) {
       const res = await fetch("/api/chirps", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ handle, body }),
+        body: JSON.stringify({ body }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "could not post");
@@ -39,58 +87,67 @@ function Composer({ handle, setHandle, onPosted }) {
 
   return (
     <form className="composer" onSubmit={submit}>
-      <label className="handle">
-        @
-        <input
-          value={handle}
-          onChange={(e) => setHandle(e.target.value.replace(/[^A-Za-z0-9_]/g, ""))}
-          placeholder="handle"
-          maxLength={30}
-          aria-label="Your handle"
+      <div className="composer-row">
+        <Avatar picture={me.picture} name={me.name} />
+        <textarea
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+          placeholder="What's happening?"
+          rows={3}
+          aria-label="Chirp text"
         />
-      </label>
-      <textarea
-        value={body}
-        onChange={(e) => setBody(e.target.value)}
-        placeholder="What's happening?"
-        rows={3}
-        aria-label="Chirp text"
-      />
+      </div>
       <div className="composer-footer">
         <span className={left < 0 ? "count over" : left < 20 ? "count low" : "count"}>{left}</span>
-        <button disabled={busy || !handle || !body.trim() || left < 0}>Chirp</button>
+        <button disabled={busy || !body.trim() || left < 0}>Chirp</button>
       </div>
       {error && <p className="error">{error}</p>}
     </form>
   );
 }
 
-function ChirpItem({ chirp, onLike }) {
+function ChirpItem({ chirp, me, onLike, onDelete }) {
+  const mine = me?.signed_in && chirp.author_id === me.id;
   return (
     <li className="chirp">
-      <div className="avatar" aria-hidden>
-        {chirp.handle[0].toUpperCase()}
-      </div>
+      <Avatar picture={chirp.picture} name={chirp.name || chirp.handle} />
       <div className="chirp-main">
         <div className="chirp-meta">
-          <b>@{chirp.handle}</b> <span>· {timeAgo(chirp.created_at)}</span>
+          <b>{chirp.name || chirp.handle}</b> <span>@{chirp.handle} · {timeAgo(chirp.created_at)}</span>
         </div>
         <p>{chirp.body}</p>
-        <button className="like" onClick={() => onLike(chirp.id)} aria-label="Like">
-          ♥ {chirp.likes}
-        </button>
+        <div className="actions">
+          <button
+            className={chirp.liked ? "like liked" : "like"}
+            onClick={() => (me?.signed_in ? onLike(chirp.id) : (location.href = loginURL()))}
+            aria-pressed={chirp.liked}
+            aria-label={chirp.liked ? "Unlike" : "Like"}
+          >
+            {chirp.liked ? "♥" : "♡"} {chirp.likes}
+          </button>
+          {mine && (
+            <button className="link" onClick={() => onDelete(chirp.id)}>
+              Delete
+            </button>
+          )}
+        </div>
       </div>
     </li>
   );
 }
 
 export default function App() {
-  const [handle, setHandle] = useState(() => localStorage.getItem("chirp.handle") || "");
+  const [me, setMe] = useState(null);
   const [chirps, setChirps] = useState([]);
   const [storage, setStorage] = useState("");
   const [offline, setOffline] = useState(false);
 
-  useEffect(() => localStorage.setItem("chirp.handle", handle), [handle]);
+  useEffect(() => {
+    fetch("/api/me")
+      .then((r) => r.json())
+      .then(setMe)
+      .catch(() => setMe({ signed_in: false }));
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -118,26 +175,32 @@ export default function App() {
     }
   }
 
+  async function remove(id) {
+    const res = await fetch(`/api/chirps/${id}`, { method: "DELETE" });
+    if (res.ok) setChirps((cs) => cs.filter((c) => c.id !== id));
+  }
+
   return (
     <main>
       <header>
         <h1>🐦 Chirp</h1>
         {storage === "memory" && (
           <span className="badge" title="Run: berth pg:create chirpdb && berth pg:link chirpdb chirp">
-            in-memory · link Postgres to keep chirps
+            in-memory
           </span>
         )}
         {offline && <span className="badge warn">reconnecting…</span>}
+        <Account me={me} />
       </header>
-      <Composer handle={handle} setHandle={setHandle} onPosted={(c) => setChirps((cs) => [c, ...cs])} />
+      <Composer me={me} onPosted={(c) => setChirps((cs) => [c, ...cs])} />
       <ul className="timeline">
         {chirps.map((c) => (
-          <ChirpItem key={c.id} chirp={c} onLike={like} />
+          <ChirpItem key={c.id} chirp={c} me={me} onLike={like} onDelete={remove} />
         ))}
         {chirps.length === 0 && <li className="empty">No chirps yet. Say something!</li>}
       </ul>
       <footer>
-        Deployed with <a href="https://github.com/dps/berth">Berth</a>
+        Deployed with <a href="https://github.com/dps/berth">Berth</a> · sign-in by Berth
       </footer>
     </main>
   );

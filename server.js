@@ -1,7 +1,7 @@
 // Chirp: a tiny Twitter clone for Berth.
 //
 // Express serves a JSON API and the React app that `npm run build` puts in
-// dist/. Chirps live in Postgres when DATABASE_URL is set (berth pg:link),
+// dist/. Berth's Google sign-in tells the app who is posting. Chirps live in Postgres when DATABASE_URL is set (berth pg:link),
 // and in memory otherwise, so the very first deploy is healthy before any
 // database exists.
 
@@ -14,32 +14,81 @@ const PORT = process.env.PORT || 3000;
 const MAX_LENGTH = 280;
 const dist = path.join(path.dirname(fileURLToPath(import.meta.url)), "dist");
 
+// ---- who is signed in ----
+//
+// Berth signs people in with Google and passes who they are as headers
+// (`berth access chirp public`). Berth deletes any X-Berth-* headers a client
+// sends, so these can be trusted. With no Berth in front (local dev),
+// everyone is anonymous unless CHIRP_DEV_USER=you@example.com is set.
+
+function viewer(req) {
+  let id = req.get("X-Berth-User-Id");
+  let email = req.get("X-Berth-Email");
+  let name = req.get("X-Berth-Name");
+  const picture = req.get("X-Berth-Picture") || "";
+  if (!id && process.env.CHIRP_DEV_USER) {
+    email = process.env.CHIRP_DEV_USER;
+    id = "dev:" + email;
+  }
+  if (!id || !email) return null;
+  try {
+    name = decodeURIComponent(name || ""); // URL-encoded so any Unicode survives
+  } catch {
+    name = "";
+  }
+  const handle = email.split("@")[0].toLowerCase().replace(/[^a-z0-9_]/g, "_").slice(0, 30);
+  return { id, email, name: name || handle, handle, picture };
+}
+
+function requireViewer(req, res, next) {
+  req.viewer = viewer(req);
+  if (!req.viewer) {
+    return res.status(401).json({ error: "sign in to chirp", login: "/_berth/login" });
+  }
+  next();
+}
+
 // ---- storage ----
 
 function memoryStore() {
   const chirps = [];
+  const likes = new Set(); // `${chirpId}:${userId}`
   let nextId = 1;
+  const view = (c, userId) => ({ ...c, liked: likes.has(`${c.id}:${userId}`) });
   return {
     kind: "memory",
     async init() {},
-    async list() {
-      return [...chirps].sort((a, b) => b.id - a.id).slice(0, 100);
+    async list(userId) {
+      return [...chirps].sort((a, b) => b.id - a.id).slice(0, 100).map((c) => view(c, userId));
     },
-    async create(handle, body) {
-      const chirp = { id: nextId++, handle, body, likes: 0, created_at: new Date().toISOString() };
+    async create(author, body) {
+      const chirp = {
+        id: nextId++, author_id: author.id, handle: author.handle, name: author.name,
+        picture: author.picture, body, likes: 0, created_at: new Date().toISOString(),
+      };
       chirps.push(chirp);
-      return chirp;
+      return view(chirp, author.id);
     },
-    async like(id) {
+    async toggleLike(id, userId) {
       const chirp = chirps.find((c) => c.id === id);
-      if (chirp) chirp.likes++;
-      return chirp;
+      if (!chirp) return null;
+      const key = `${id}:${userId}`;
+      if (likes.delete(key)) chirp.likes--;
+      else (likes.add(key), chirp.likes++);
+      return view(chirp, userId);
+    },
+    async remove(id, userId) {
+      const i = chirps.findIndex((c) => c.id === id && c.author_id === userId);
+      if (i < 0) return false;
+      chirps.splice(i, 1);
+      return true;
     },
   };
 }
 
 function postgresStore(url) {
   const pool = new pg.Pool({ connectionString: url });
+  const select = `SELECT c.*, EXISTS (SELECT 1 FROM likes l WHERE l.chirp_id = c.id AND l.user_id = $1) AS liked FROM chirps c`;
   return {
     kind: "postgres",
     async init() {
@@ -50,24 +99,55 @@ function postgresStore(url) {
         likes      integer NOT NULL DEFAULT 0,
         created_at timestamptz NOT NULL DEFAULT now()
       )`);
+      // Columns added when Chirp moved to Berth sign-in.
+      await pool.query(`ALTER TABLE chirps
+        ADD COLUMN IF NOT EXISTS author_id text,
+        ADD COLUMN IF NOT EXISTS name text,
+        ADD COLUMN IF NOT EXISTS picture text`);
+      await pool.query(`CREATE TABLE IF NOT EXISTS likes (
+        chirp_id integer NOT NULL REFERENCES chirps ON DELETE CASCADE,
+        user_id  text NOT NULL,
+        PRIMARY KEY (chirp_id, user_id)
+      )`);
     },
-    async list() {
-      const { rows } = await pool.query("SELECT * FROM chirps ORDER BY id DESC LIMIT 100");
+    async list(userId) {
+      const { rows } = await pool.query(`${select} ORDER BY c.id DESC LIMIT 100`, [userId || ""]);
       return rows;
     },
-    async create(handle, body) {
+    async create(author, body) {
       const { rows } = await pool.query(
-        "INSERT INTO chirps (handle, body) VALUES ($1, $2) RETURNING *",
-        [handle, body],
+        `INSERT INTO chirps (author_id, handle, name, picture, body) VALUES ($1, $2, $3, $4, $5) RETURNING *, false AS liked`,
+        [author.id, author.handle, author.name, author.picture, body],
       );
       return rows[0];
     },
-    async like(id) {
-      const { rows } = await pool.query(
-        "UPDATE chirps SET likes = likes + 1 WHERE id = $1 RETURNING *",
-        [id],
-      );
-      return rows[0];
+    async toggleLike(id, userId) {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const added = await client.query(
+          "INSERT INTO likes (chirp_id, user_id) SELECT id, $2 FROM chirps WHERE id = $1 ON CONFLICT DO NOTHING",
+          [id, userId],
+        );
+        if (added.rowCount) {
+          await client.query("UPDATE chirps SET likes = likes + 1 WHERE id = $1", [id]);
+        } else {
+          const removed = await client.query("DELETE FROM likes WHERE chirp_id = $1 AND user_id = $2", [id, userId]);
+          if (removed.rowCount) await client.query("UPDATE chirps SET likes = likes - 1 WHERE id = $1", [id]);
+        }
+        const { rows } = await client.query(`${select} WHERE c.id = $2`, [userId, id]);
+        await client.query("COMMIT");
+        return rows[0];
+      } catch (err) {
+        await client.query("ROLLBACK");
+        throw err;
+      } finally {
+        client.release();
+      }
+    },
+    async remove(id, userId) {
+      const { rowCount } = await pool.query("DELETE FROM chirps WHERE id = $1 AND author_id = $2", [id, userId]);
+      return rowCount > 0;
     },
   };
 }
@@ -81,34 +161,47 @@ app.use(express.json({ limit: "10kb" }));
 
 app.get("/healthz", (req, res) => res.json({ ok: true, storage: store.kind }));
 
+app.get("/api/me", (req, res) => {
+  res.set("Cache-Control", "no-store");
+  const me = viewer(req);
+  res.json(me ? { signed_in: true, ...me } : { signed_in: false });
+});
+
 app.get("/api/chirps", async (req, res, next) => {
   try {
-    res.json({ storage: store.kind, chirps: await store.list() });
+    res.set("Cache-Control", "no-store");
+    res.json({ storage: store.kind, chirps: await store.list(viewer(req)?.id) });
   } catch (err) {
     next(err);
   }
 });
 
-app.post("/api/chirps", async (req, res, next) => {
-  const handle = String(req.body?.handle || "").trim().replace(/^@/, "").slice(0, 30);
+app.post("/api/chirps", requireViewer, async (req, res, next) => {
   const body = String(req.body?.body || "").trim();
-  if (!handle || !/^[A-Za-z0-9_]+$/.test(handle)) {
-    return res.status(400).json({ error: "handle: letters, digits and _ only" });
-  }
   if (!body || body.length > MAX_LENGTH) {
     return res.status(400).json({ error: `chirps are 1-${MAX_LENGTH} characters` });
   }
   try {
-    res.status(201).json(await store.create(handle, body));
+    res.status(201).json(await store.create(req.viewer, body));
   } catch (err) {
     next(err);
   }
 });
 
-app.post("/api/chirps/:id/like", async (req, res, next) => {
+app.post("/api/chirps/:id/like", requireViewer, async (req, res, next) => {
   try {
-    const chirp = await store.like(Number(req.params.id));
+    const chirp = await store.toggleLike(Number(req.params.id), req.viewer.id);
     chirp ? res.json(chirp) : res.status(404).json({ error: "no such chirp" });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.delete("/api/chirps/:id", requireViewer, async (req, res, next) => {
+  try {
+    (await store.remove(Number(req.params.id), req.viewer.id))
+      ? res.status(204).end()
+      : res.status(404).json({ error: "no such chirp of yours" });
   } catch (err) {
     next(err);
   }

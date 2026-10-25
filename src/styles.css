@@ -24,8 +24,16 @@ h1 { font-size: 20px; margin: 0; }
 .badge { font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; }
 .badge.warn { color: var(--like); }
 .composer { padding: 12px 16px; border-bottom: 1px solid var(--line); display: grid; gap: 8px; }
-.handle { color: var(--muted); display: flex; align-items: center; gap: 2px; }
-.handle input { border: none; background: transparent; color: var(--fg); font: inherit; font-weight: 600; outline: none; }
+.composer-row { display: flex; gap: 12px; }
+.composer.prompt { display: flex; align-items: center; justify-content: space-between; }
+.composer.prompt p { margin: 0; color: var(--muted); }
+.signin { margin-left: auto; background: var(--accent); color: #fff; border-radius: 999px; padding: 6px 14px; font-weight: 700; font-size: 14px; text-decoration: none; white-space: nowrap; }
+.composer.prompt .signin { margin-left: 0; }
+.account { margin-left: auto; display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 14px; }
+.account form { margin: 0; }
+.account-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.link { background: none; border: none; color: var(--muted); padding: 0; font-size: 14px; text-decoration: underline; }
+.actions { display: flex; gap: 20px; align-items: center; }
 textarea { width: 100%; border: none; resize: vertical; background: transparent; color: var(--fg); font: inherit; font-size: 18px; outline: none; }
 .composer-footer { display: flex; justify-content: flex-end; align-items: center; gap: 12px; }
 .count { color: var(--muted); font-size: 13px; }
@@ -37,12 +45,12 @@ button { font: inherit; cursor: pointer; }
 .error { color: var(--like); margin: 0; font-size: 14px; }
 .timeline { list-style: none; margin: 0; padding: 0; }
 .chirp { display: flex; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
-.avatar { width: 40px; height: 40px; flex: none; border-radius: 50%; background: var(--accent); color: #fff; display: grid; place-items: center; font-weight: 700; }
+.avatar { width: 40px; height: 40px; flex: none; border-radius: 50%; background: var(--accent); color: #fff; display: grid; place-items: center; font-weight: 700; object-fit: cover; }
 .chirp-main { min-width: 0; flex: 1; }
 .chirp-meta span { color: var(--muted); }
 .chirp p { margin: 4px 0 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .like { background: none; border: none; color: var(--muted); padding: 0; }
-.like:hover { color: var(--like); }
+.like:hover, .like.liked { color: var(--like); }
 .empty { padding: 32px 16px; color: var(--muted); text-align: center; }
 footer { padding: 24px 16px; color: var(--muted); font-size: 13px; text-align: center; }
 footer a { color: var(--accent); }
