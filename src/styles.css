@@ -49,6 +49,7 @@ button { font: inherit; cursor: pointer; }
 .chirp-main { min-width: 0; flex: 1; }
 .chirp-meta span { color: var(--muted); }
 .chirp p { margin: 4px 0 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.chirp p.single-emoji { font-size: 64px; line-height: 1.2; }
 .like { background: none; border: none; color: var(--muted); padding: 0; }
 .like:hover, .like.liked { color: var(--like); }
 .empty { padding: 32px 16px; color: var(--muted); text-align: center; }

@@ -10,6 +10,25 @@ function timeAgo(iso) {
   return new Date(iso).toLocaleDateString();
 }
 
+// True when the body is just one emoji: a single grapheme cluster that
+// contains emoji content. The grapheme split keeps ZWJ sequences (👨‍👩‍👧),
+// skin-tone modifiers (👍🏽) and flags (🇺🇸) as one unit; the regex also
+// accepts keycap / text-presentation emoji (1️⃣, ©️) via their joiners.
+function isSingleEmoji(text) {
+  const trimmed = (text || "").trim();
+  if (!trimmed) return false;
+  let graphemes;
+  if (typeof Intl !== "undefined" && Intl.Segmenter) {
+    graphemes = [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(trimmed)].map(
+      (s) => s.segment,
+    );
+  } else {
+    graphemes = Array.from(trimmed);
+  }
+  if (graphemes.length !== 1) return false;
+  return /\p{Extended_Pictographic}|\p{Regional_Indicator}|[\u200D\uFE0F\u20E3]/u.test(graphemes[0]);
+}
+
 // Berth's sign-in endpoints live on every app with an access policy.
 const loginURL = () => "/_berth/login?return=" + encodeURIComponent(location.pathname + location.search);
 
@@ -115,7 +134,7 @@ function ChirpItem({ chirp, me, onLike, onDelete }) {
         <div className="chirp-meta">
           <b>{chirp.name || chirp.handle}</b> <span>@{chirp.handle} · {timeAgo(chirp.created_at)}</span>
         </div>
-        <p>{chirp.body}</p>
+        <p className={isSingleEmoji(chirp.body) ? "single-emoji" : undefined}>{chirp.body}</p>
         <div className="actions">
           <button
             className={chirp.liked ? "like liked" : "like"}
