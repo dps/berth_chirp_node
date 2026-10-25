@@ -143,6 +143,39 @@ function postgresStore(url) {
 
 const store = process.env.DATABASE_URL ? postgresStore(process.env.DATABASE_URL) : memoryStore();
 
+// ---- AI: "what's happening?" ----
+//
+// `berth ai:enable chirp` points the standard OpenAI variables at Berth's AI
+// gateway, with a token of Chirp's own; the model behind it (local or cloud)
+// is the gateway's business. Any OpenAI-compatible endpoint works the same
+// way. CHIRP_AI_MODEL picks the model (default: the gateway's "default").
+
+const ai = process.env.OPENAI_BASE_URL && process.env.OPENAI_API_KEY
+  ? { base: process.env.OPENAI_BASE_URL.replace(/\/$/, ""), key: process.env.OPENAI_API_KEY, model: process.env.CHIRP_AI_MODEL || "default" }
+  : null;
+
+let lastSummary = { newest: -1, text: "" }; // the timeline hasn't changed: reuse it
+
+async function summarize(chirps) {
+  const timeline = chirps.slice(0, 50).reverse().map((c) => `@${c.handle}: ${c.body}`).join("\n");
+  const res = await fetch(`${ai.base}/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${ai.key}` },
+    signal: AbortSignal.timeout(120_000),
+    body: JSON.stringify({
+      model: ai.model,
+      messages: [
+        { role: "system", content: "You summarize a small social timeline. In two or three short, friendly sentences, say what people are chirping about. Mention people as @handle. No preamble, no lists." },
+        { role: "user", content: timeline },
+      ],
+    }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error?.message || res.statusText);
+  // Some local models think out loud first; keep only the answer.
+  return (data.choices?.[0]?.message?.content || "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+}
+
 // ---- HTTP ----
 
 const app = express();
@@ -153,7 +186,7 @@ app.get("/healthz", (req, res) => res.json({ ok: true, storage: store.kind }));
 app.get("/api/me", (req, res) => {
   res.set("Cache-Control", "no-store");
   const me = viewer(req);
-  res.json(me ? { signed_in: true, ...me } : { signed_in: false });
+  res.json({ ...(me ? { signed_in: true, ...me } : { signed_in: false }), ai: !!ai });
 });
 
 app.get("/api/chirps", async (req, res, next) => {
@@ -193,6 +226,21 @@ app.delete("/api/chirps/:id", requireViewer, async (req, res, next) => {
       : res.status(404).json({ error: "no such chirp of yours" });
   } catch (err) {
     next(err);
+  }
+});
+
+app.post("/api/summary", requireViewer, async (req, res, next) => {
+  if (!ai) return res.status(404).json({ error: "no AI here (berth ai:enable chirp)" });
+  try {
+    const chirps = await store.list(req.viewer.id);
+    if (chirps.length === 0) return res.json({ summary: "Nothing yet: the timeline is empty." });
+    if (chirps[0].id !== lastSummary.newest) {
+      lastSummary = { newest: chirps[0].id, text: await summarize(chirps) };
+    }
+    res.json({ summary: lastSummary.text });
+  } catch (err) {
+    console.error("summary:", err.message);
+    res.status(502).json({ error: "the AI didn't answer; try again in a moment" });
   }
 });
 

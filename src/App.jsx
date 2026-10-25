@@ -155,6 +155,29 @@ function ChirpItem({ chirp, me, onLike, onDelete }) {
   );
 }
 
+function Summary() {
+  const [state, setState] = useState({ busy: false, text: "", error: "" });
+  async function ask() {
+    setState({ busy: true, text: "", error: "" });
+    try {
+      const res = await fetch("/api/summary", { method: "POST" });
+      const data = await res.json();
+      setState({ busy: false, text: data.summary || "", error: data.error || "" });
+    } catch {
+      setState({ busy: false, text: "", error: "couldn't reach Chirp" });
+    }
+  }
+  return (
+    <section className="summary">
+      <button onClick={ask} disabled={state.busy}>
+        {state.busy ? "Reading the timeline…" : "✨ What's happening?"}
+      </button>
+      {state.text && <p>{state.text}</p>}
+      {state.error && <p className="error">{state.error}</p>}
+    </section>
+  );
+}
+
 export default function App() {
   const [me, setMe] = useState(null);
   const [chirps, setChirps] = useState([]);
@@ -212,6 +235,7 @@ export default function App() {
         <Account me={me} />
       </header>
       <Composer me={me} onPosted={(c) => setChirps((cs) => [c, ...cs])} />
+      {me?.signed_in && me.ai && <Summary />}
       <ul className="timeline">
         {chirps.map((c) => (
           <ChirpItem key={c.id} chirp={c} me={me} onLike={like} onDelete={remove} />

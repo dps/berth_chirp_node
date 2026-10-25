@@ -35,6 +35,24 @@ To make the whole site members-only instead:
 Until Postgres is linked, chirps are kept in memory (and lost on each
 deploy); the page says so.
 
+## AI summary
+
+Signed-in visitors get a "✨ What's happening?" button that sums up the
+timeline in two or three sentences. Chirp has no AI keys and no model
+choice of its own: it calls whatever `OPENAI_BASE_URL` points at, which
+Berth's AI gateway sets up:
+
+```bash
+berth ai:setup            # once per Berth: Ollama and a local model
+berth ai:enable chirp     # gives Chirp OPENAI_BASE_URL and its own token
+```
+
+It asks for the model `default` (the gateway's alias for the local model);
+set `CHIRP_AI_MODEL=smart` or any other alias to change it. The summary is
+cached until someone chirps again. Without AI enabled, the button doesn't
+appear. Any other OpenAI-compatible endpoint works too: set
+`OPENAI_BASE_URL`, `OPENAI_API_KEY` and `CHIRP_AI_MODEL` yourself.
+
 ## Migrations
 
 The schema lives in `migrations/*.sql`, applied in name order by
@@ -74,6 +92,7 @@ only in a release after the code stops using it.
 | `POST /api/chirps` | `{"body": "hello"}` (signed in) |
 | `POST /api/chirps/:id/like` | like or unlike (signed in) |
 | `DELETE /api/chirps/:id` | delete your own chirp |
+| `POST /api/summary` | an AI summary of the timeline (signed in, AI enabled) |
 | `/healthz` | health check: `berth config:set chirp BERTH_HEALTHCHECK=/healthz` |
 
 Local development: `npm install`, then (with a `DATABASE_URL`) `node
