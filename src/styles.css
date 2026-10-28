@@ -50,6 +50,41 @@ button { font: inherit; cursor: pointer; }
 .chirp-meta span { color: var(--muted); }
 .chirp p { margin: 4px 0 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .chirp p.single-emoji { font-size: 64px; line-height: 1.2; }
+.brand { color: inherit; text-decoration: none; }
+.quiet { color: inherit; text-decoration: none; }
+.quiet:hover { text-decoration: underline; }
+.tag { color: var(--accent); text-decoration: none; }
+.tag:hover { text-decoration: underline; }
+.tabs { display: flex; border-bottom: 1px solid var(--line); }
+.tab { flex: 1; background: none; border: none; padding: 12px; font-weight: 700; color: var(--muted); border-bottom: 2px solid transparent; }
+.tab.active { color: var(--fg); border-bottom-color: var(--accent); }
+.banner { padding: 10px 16px; border-bottom: 1px solid var(--line); color: var(--muted); display: flex; justify-content: space-between; align-items: center; }
+.banner a { color: var(--accent); }
+.banner.warn { color: var(--like); }
+.actions { font-size: 14px; }
+.action { background: none; border: none; color: var(--muted); padding: 0; text-decoration: none; }
+a.action:hover { color: var(--accent); }
+button.action:hover { color: #00ba7c; }
+.action.rechirped { color: #00ba7c; font-weight: 700; }
+.reply-context { color: var(--muted); font-size: 14px; }
+.reply-context a { color: inherit; }
+.rechirp-label { color: var(--muted); font-size: 14px; margin-bottom: 4px; }
+.rechirp-label a { color: inherit; font-weight: 700; text-decoration: none; }
+.rechirp-label a:hover { text-decoration: underline; }
+.original { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-top: 4px; display: flex; gap: 10px; }
+.original.unavailable { color: var(--muted); display: block; }
+.thread-main p { font-size: 18px; }
+.replies-label { padding: 12px 16px 0; font-weight: 800; }
+.back { display: inline-block; padding: 10px 16px 0; color: var(--muted); text-decoration: none; font-size: 14px; }
+.back:hover { text-decoration: underline; }
+.profile { padding: 16px; border-bottom: 1px solid var(--line); display: grid; gap: 10px; }
+.profile-top { display: flex; gap: 12px; align-items: center; }
+.profile-name { font-size: 20px; font-weight: 800; margin: 0; }
+.profile-handle { color: var(--muted); margin: 0; }
+.profile-stats { color: var(--muted); font-size: 14px; display: flex; gap: 16px; }
+.profile-stats b { color: var(--fg); }
+.follow { background: var(--fg); color: var(--bg); border: none; border-radius: 999px; padding: 6px 16px; font-weight: 700; }
+.follow.following { background: transparent; color: var(--fg); border: 1px solid var(--line); }
 .like { background: none; border: none; color: var(--muted); padding: 0; }
 .like:hover, .like.liked { color: var(--like); }
 .empty { padding: 32px 16px; color: var(--muted); text-align: center; }

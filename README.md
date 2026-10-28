@@ -86,15 +86,22 @@ only in a release after the code stops using it.
 
 | Path | What |
 | --- | --- |
-| `/` | the timeline (React) |
+| `/` | the timeline (React): For you / Following tabs, `#/chirp/:id` threads, `#/user/:handle` profiles, `#/tag/:tag` search |
 | `GET /api/me` | who is signed in |
-| `GET /api/chirps` | newest 100 chirps (with `liked` for the viewer) |
-| `POST /api/chirps` | `{"body": "hello"}` (signed in) |
+| `GET /api/chirps` | newest 100 chirps (with `liked`/`rechirped` for the viewer); `?tag=birds` filters by hashtag, `?following=1` is the viewer's timeline (signed in) |
+| `GET /api/chirps/:id/thread` | a chirp with its ancestors and chronological replies |
+| `POST /api/chirps` | `{"body": "hello"}` (signed in); add `"parent_id": 12` to reply |
 | `POST /api/chirps/:id/like` | like or unlike (signed in) |
-| `DELETE /api/chirps/:id` | delete your own chirp |
+| `POST /api/chirps/:id/rechirp` | rechirp or undo it (signed in) |
+| `DELETE /api/chirps/:id` | delete your own chirp (replies and rechirps go with it) |
+| `GET /api/users/:handle` | profile: stats plus newest 100 chirps |
+| `POST /api/users/:handle/follow` | follow or unfollow (signed in) |
 | `POST /api/summary` | an AI summary of the timeline (signed in, AI enabled) |
 | `/healthz` | health check: `berth config:set chirp BERTH_HEALTHCHECK=/healthz` |
 
 Local development: `npm install`, then (with a `DATABASE_URL`) `node
 migrate.js`, then `CHIRP_DEV_USER=you@example.com npm start` in one terminal (a pretend signed-in user, since there's no Berth in
 front) and `npm run dev` in another.
+
+Tests: `npm test` runs the HTTP, store and hashtag suites. The Postgres
+store suite runs when `DATABASE_URL` is set and skips otherwise.

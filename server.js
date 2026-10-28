@@ -3,12 +3,12 @@
 // Express serves a JSON API and the React app that `npm run build` puts in
 // dist/. Berth's Google sign-in tells the app who is posting. Chirps live in Postgres when DATABASE_URL is set (berth pg:link),
 // and in memory otherwise, so the very first deploy is healthy before any
-// database exists.
+// database exists. Storage lives in stores.js; both stores share one interface.
 
 import express from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import pg from "pg";
+import { memoryStore, postgresStore } from "./stores.js";
 
 const PORT = process.env.PORT || 3000;
 const MAX_LENGTH = 280;
@@ -48,97 +48,10 @@ function requireViewer(req, res, next) {
   next();
 }
 
-// ---- storage ----
-
-function memoryStore() {
-  const chirps = [];
-  const likes = new Set(); // `${chirpId}:${userId}`
-  let nextId = 1;
-  const view = (c, userId) => ({ ...c, liked: likes.has(`${c.id}:${userId}`) });
-  return {
-    kind: "memory",
-    async init() {},
-    async list(userId) {
-      return [...chirps].sort((a, b) => b.id - a.id).slice(0, 100).map((c) => view(c, userId));
-    },
-    async create(author, body) {
-      const chirp = {
-        id: nextId++, author_id: author.id, handle: author.handle, name: author.name,
-        picture: author.picture, body, likes: 0, created_at: new Date().toISOString(),
-      };
-      chirps.push(chirp);
-      return view(chirp, author.id);
-    },
-    async toggleLike(id, userId) {
-      const chirp = chirps.find((c) => c.id === id);
-      if (!chirp) return null;
-      const key = `${id}:${userId}`;
-      if (likes.delete(key)) chirp.likes--;
-      else (likes.add(key), chirp.likes++);
-      return view(chirp, userId);
-    },
-    async remove(id, userId) {
-      const i = chirps.findIndex((c) => c.id === id && c.author_id === userId);
-      if (i < 0) return false;
-      chirps.splice(i, 1);
-      return true;
-    },
-  };
-}
-
-function postgresStore(url) {
-  const pool = new pg.Pool({ connectionString: url });
-  const select = `SELECT c.*, EXISTS (SELECT 1 FROM likes l WHERE l.chirp_id = c.id AND l.user_id = $1) AS liked FROM chirps c`;
-  return {
-    kind: "postgres",
-    async init() {
-      // The schema is migrate.js's job (Berth runs it before each release).
-      try {
-        await pool.query("SELECT 1 FROM schema_migrations LIMIT 1");
-      } catch {
-        throw new Error("the database has no schema yet: run `node migrate.js` (Berth runs it via the Procfile)");
-      }
-    },
-    async list(userId) {
-      const { rows } = await pool.query(`${select} ORDER BY c.id DESC LIMIT 100`, [userId || ""]);
-      return rows;
-    },
-    async create(author, body) {
-      const { rows } = await pool.query(
-        `INSERT INTO chirps (author_id, handle, name, picture, body) VALUES ($1, $2, $3, $4, $5) RETURNING *, false AS liked`,
-        [author.id, author.handle, author.name, author.picture, body],
-      );
-      return rows[0];
-    },
-    async toggleLike(id, userId) {
-      const client = await pool.connect();
-      try {
-        await client.query("BEGIN");
-        const added = await client.query(
-          "INSERT INTO likes (chirp_id, user_id) SELECT id, $2 FROM chirps WHERE id = $1 ON CONFLICT DO NOTHING",
-          [id, userId],
-        );
-        if (added.rowCount) {
-          await client.query("UPDATE chirps SET likes = likes + 1 WHERE id = $1", [id]);
-        } else {
-          const removed = await client.query("DELETE FROM likes WHERE chirp_id = $1 AND user_id = $2", [id, userId]);
-          if (removed.rowCount) await client.query("UPDATE chirps SET likes = likes - 1 WHERE id = $1", [id]);
-        }
-        const { rows } = await client.query(`${select} WHERE c.id = $2`, [userId, id]);
-        await client.query("COMMIT");
-        return rows[0];
-      } catch (err) {
-        await client.query("ROLLBACK");
-        throw err;
-      } finally {
-        client.release();
-      }
-    },
-    async remove(id, userId) {
-      const { rowCount } = await pool.query("DELETE FROM chirps WHERE id = $1 AND author_id = $2", [id, userId]);
-      return rowCount > 0;
-    },
-  };
+// Numeric chirp id, or null for garbage (which can never match a row).
+function chirpId(value) {
+  const id = Number(value);
+  return Number.isInteger(id) ? id : null;
 }
 
 const store = process.env.DATABASE_URL ? postgresStore(process.env.DATABASE_URL) : memoryStore();
@@ -192,7 +105,23 @@ app.get("/api/me", (req, res) => {
 app.get("/api/chirps", async (req, res, next) => {
   try {
     res.set("Cache-Control", "no-store");
-    res.json({ storage: store.kind, chirps: await store.list(viewer(req)?.id) });
+    const me = viewer(req);
+    const followingOnly = req.query.following === "1";
+    if (followingOnly && !me) {
+      return res.status(401).json({ error: "sign in to see your timeline", login: "/_berth/login" });
+    }
+    const tag = typeof req.query.tag === "string" && req.query.tag.trim() ? req.query.tag : null;
+    res.json({ storage: store.kind, chirps: await store.list(me?.id, { tag, followingOnly }) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get("/api/chirps/:id/thread", async (req, res, next) => {
+  try {
+    const id = chirpId(req.params.id);
+    const thread = id == null ? null : await store.thread(id, viewer(req)?.id);
+    thread ? res.json(thread) : res.status(404).json({ error: "no such chirp" });
   } catch (err) {
     next(err);
   }
@@ -203,8 +132,14 @@ app.post("/api/chirps", requireViewer, async (req, res, next) => {
   if (!body || body.length > MAX_LENGTH) {
     return res.status(400).json({ error: `chirps are 1-${MAX_LENGTH} characters` });
   }
+  const rawParent = req.body?.parent_id;
+  const parentId = rawParent == null || rawParent === "" ? null : chirpId(rawParent);
+  if (rawParent != null && rawParent !== "" && parentId == null) {
+    return res.status(400).json({ error: "bad parent_id" });
+  }
   try {
-    res.status(201).json(await store.create(req.viewer, body));
+    const chirp = await store.create(req.viewer, body, { parentId });
+    chirp ? res.status(201).json(chirp) : res.status(404).json({ error: "no such chirp" });
   } catch (err) {
     next(err);
   }
@@ -214,6 +149,16 @@ app.post("/api/chirps/:id/like", requireViewer, async (req, res, next) => {
   try {
     const chirp = await store.toggleLike(Number(req.params.id), req.viewer.id);
     chirp ? res.json(chirp) : res.status(404).json({ error: "no such chirp" });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post("/api/chirps/:id/rechirp", requireViewer, async (req, res, next) => {
+  try {
+    const id = chirpId(req.params.id);
+    const result = id == null ? null : await store.toggleRechirp(id, req.viewer);
+    result ? res.json(result) : res.status(404).json({ error: "no such chirp" });
   } catch (err) {
     next(err);
   }
@@ -232,7 +177,8 @@ app.delete("/api/chirps/:id", requireViewer, async (req, res, next) => {
 app.post("/api/summary", requireViewer, async (req, res, next) => {
   if (!ai) return res.status(404).json({ error: "no AI here (berth ai:enable chirp)" });
   try {
-    const chirps = await store.list(req.viewer.id);
+    // Rechirps carry no text of their own, so they would only dilute the summary.
+    const chirps = (await store.list(req.viewer.id)).filter((c) => !c.rechirp_of);
     if (chirps.length === 0) return res.json({ summary: "Nothing yet: the timeline is empty." });
     if (chirps[0].id !== lastSummary.newest) {
       lastSummary = { newest: chirps[0].id, text: await summarize(chirps) };
@@ -241,6 +187,29 @@ app.post("/api/summary", requireViewer, async (req, res, next) => {
   } catch (err) {
     console.error("summary:", err.message);
     res.status(502).json({ error: "the AI didn't answer; try again in a moment" });
+  }
+});
+
+app.get("/api/users/:handle", async (req, res, next) => {
+  try {
+    res.set("Cache-Control", "no-store");
+    const profile = await store.profile(req.params.handle, viewer(req));
+    profile ? res.json(profile) : res.status(404).json({ error: "no such user" });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post("/api/users/:handle/follow", requireViewer, async (req, res, next) => {
+  try {
+    if (req.params.handle.toLowerCase() === req.viewer.handle.toLowerCase()) {
+      return res.status(400).json({ error: "you cannot follow yourself" });
+    }
+    const profile = await store.profile(req.params.handle, req.viewer);
+    if (!profile) return res.status(404).json({ error: "no such user" });
+    res.json({ ...(await store.toggleFollow(req.viewer.id, profile.author_id)), handle: profile.handle });
+  } catch (err) {
+    next(err);
   }
 });
 
@@ -254,6 +223,11 @@ app.use((err, req, res, next) => {
 });
 
 await store.init();
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`chirp listening on :${PORT} (storage: ${store.kind})`);
-});
+if (!process.env.CHIRP_TEST) {
+  // test/http.test.js imports the app and owns its own socket.
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`chirp listening on :${PORT} (storage: ${store.kind})`);
+  });
+}
+
+export { app, store };
